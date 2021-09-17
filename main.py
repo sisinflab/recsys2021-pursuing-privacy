@@ -30,6 +30,10 @@ e2 = 1
 b = 1
 
 ratings = pd.read_csv('data/movielens/dataset.csv')
+
+# TODO: Splitting train-test
+
+
 min_rating = ratings['rating'].min()
 max_rating = ratings['rating'].max()
 delta_r = max_rating - min_rating
