@@ -31,7 +31,6 @@ gflags.DEFINE_string('model_dir', None, 'Model directory')
 
 
 def nn_model_fn(features, labels, mode):
-    """NN adapted from github.com/hexiangnan/neural_collaborative_filtering."""
     n_latent_factors_user = 10
     n_latent_factors_movie = 10
     n_latent_factors_mf = 5

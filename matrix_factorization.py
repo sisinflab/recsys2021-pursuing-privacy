@@ -211,7 +211,7 @@ f = 100
 lr = 0.001
 epochs = 30
 
-mf = MF(train_set, maps, f, relevance=3.5, i_avg=i_avg, u_avg=u_avg)
+mf = MF(train_set, maps, f, relevance=3, i_avg=i_avg, u_avg=u_avg)
 # If we don't want to send privatized input:
 # mf = MF(train_set, f)
 mf.train(lr, epochs)
