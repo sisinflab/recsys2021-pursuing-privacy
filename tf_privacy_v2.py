@@ -119,26 +119,33 @@ class NCF(keras.Model):
             with tqdm(total=int(self.transactions * 3 // self.batch_size)) as t:
                 for batch in self._sampler.step(self.batch_size):
                     steps += 1
+                    self.train_step(batch)
                     loss += self.train_step(batch).numpy()
                     t.set_postfix({'loss': f'{loss / steps:.5f}'})
                     t.update()
+            eps = compute_eps_poisson(e+1, 0.55, self.transactions,
+                                      10000, 1e-6)
+            mu = compute_mu_poisson(e+1, 0.55, self.transactions,
+                                    10000)
+            print('For delta=1e-6, the current epsilon is: %.2f' % eps)
+            print('For delta=1e-6, the current mu is: %.2f' % mu)
 
-    @tf.function
+            if mu > 3:
+                break
+
+    # @tf.function
     def train_step(self, batch):
 
         user, pos, label = batch
         with tf.GradientTape() as tape:
             # Clean Inference
             output = self(inputs=(user, pos), training=True)
-            loss = self.loss(tf.reshape(label, [len(label), 1]), output)
-
+            loss = tf.expand_dims(self.loss(label, output), -1)
             def loss_fn():
-                output = self(inputs=(user, pos), training=True)
-                loss = self.loss(tf.reshape(label, [len(label), 1]), output)
-                # loss = tf.reshape(loss, [1])
+                loss = tf.expand_dims(self.loss(label, output), -1)
                 return loss
 
-            grads_and_vars = self.optimizer.compute_gradients(loss=loss, var_list=self.trainable_weights)
+            grads_and_vars = self.optimizer.compute_gradients(loss=loss_fn, var_list=self.trainable_weights, gradient_tape=tape)
         # self.optimizer.minimize(loss=loss_fn, var_list=[self.weights])
         self.optimizer.apply_gradients(grads_and_vars)
         return tf.reduce_mean(input_tensor=loss)
@@ -163,9 +170,16 @@ if __name__ == "__main__":
     lr = 0.001
     epochs = 30
 
+    optimizer = dp_optimizer_keras.DPKerasAdamOptimizer(
+            l2_norm_clip=5,
+            noise_multiplier=0.55,
+            num_microbatches=512,
+            learning_rate=0.001)
+
     mf = NCF(train_set, maps, 4, 4, (4*4, 4*2, 4), 0, 0.001)
     # If we don't want to send privatized input:
     # mf = MF(train_set, f)
+    # mf.summary()
     mf.train(50)
     # NCF.evaluate(test_set)
     #mf.train_dp(lr, epochs, 10)

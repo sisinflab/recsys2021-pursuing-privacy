@@ -20,17 +20,18 @@ tf.compat.v1.logging.set_verbosity(3)
 FLAGS = gflags.FLAGS
 gflags.DEFINE_boolean(
     'dpsgd', False, 'If True, train with DP-SGD. If False, '
-    'train with vanilla SGD.')
-gflags.DEFINE_float('learning_rate', .01, 'Learning rate for training')
-gflags.DEFINE_float('noise_multiplier', 0.55,
-                   'Ratio of the standard deviation to the clipping norm')
+                   'train with vanilla SGD.')
+gflags.DEFINE_float('learning_rate', .001, 'Learning rate for training')
+gflags.DEFINE_float('noise_multiplier', 0.8,
+                    'Ratio of the standard deviation to the clipping norm')
 gflags.DEFINE_float('l2_norm_clip', 5, 'Clipping norm')
-gflags.DEFINE_integer('epochs', 25, 'Number of epochs')
+gflags.DEFINE_integer('epochs', 1, 'Number of epochs')
 gflags.DEFINE_integer('max_mu', 3, 'GDP upper limit')
 gflags.DEFINE_string('model_dir', None, 'Model directory')
 
 
 def nn_model_fn(features, labels, mode):
+
     n_latent_factors_user = 10
     n_latent_factors_movie = 10
     n_latent_factors_mf = 5
@@ -64,11 +65,20 @@ def nn_model_fn(features, labels, mode):
 
     predict_vector = tf.keras.layers.concatenate([mf_vector, mlp_vector])
 
-    logits = tf.keras.layers.Dense(5)(predict_vector)
+    logits = tf.keras.layers.Dense(1)(predict_vector)
+
+    if mode == tf.estimator.ModeKeys.PREDICT:
+        predictions = {
+            'score': tf.tensordot(
+                        a=tf.nn.sigmoid(logits),
+                        b=tf.constant(np.array([1]), dtype=tf.float32),
+                        axes=1)
+        }
+        return tf.estimator.EstimatorSpec(mode=mode, predictions=predictions)
 
     # Calculate loss as a vector (to support microbatches in DP-SGD).
-    vector_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(
-        labels=labels, logits=logits)
+    vector_loss = tf.nn.sigmoid_cross_entropy_with_logits(
+        labels=tf.expand_dims(labels, -1), logits=logits)
     # Define mean of loss across minibatch (for reporting through tf.Estimator).
     scalar_loss = tf.reduce_mean(vector_loss)
 
@@ -99,6 +109,7 @@ def nn_model_fn(features, labels, mode):
         return tf.estimator.EstimatorSpec(
             mode=mode, loss=scalar_loss, train_op=train_op)
 
+
     # Add evaluation metrics (for EVAL mode).
     if mode == tf.estimator.ModeKeys.EVAL:
         eval_metric_ops = {
@@ -106,8 +117,8 @@ def nn_model_fn(features, labels, mode):
                 tf.compat.v1.metrics.root_mean_squared_error(
                     labels=tf.cast(labels, tf.float32),
                     predictions=tf.tensordot(
-                        a=tf.nn.softmax(logits, axis=1),
-                        b=tf.constant(np.array([0, 1, 2, 3, 4]), dtype=tf.float32),
+                        a=tf.nn.sigmoid(logits),
+                        b=tf.constant(np.array([1]), dtype=tf.float32),
                         axes=1))
         }
         return tf.estimator.EstimatorSpec(
@@ -142,13 +153,15 @@ if __name__ == "__main__":
 
     # Create tf.Estimator input functions for the training and test data.
     eval_input_fn = tf.compat.v1.estimator.inputs.numpy_input_fn(
-      x={
-          'user': test_data[:, 0],
-          'movie': test_data[:, 4]
-      },
-      y=test_data[:, 2],
-      num_epochs=1,
-      shuffle=False)
+        x={
+            'user': test_data[:, 0],
+            'movie': test_data[:, 4]
+        },
+        y=(test_data[:, 2] >= 4).astype(np.float32),
+        num_epochs=1,
+        batch_size=len(test_data),
+        shuffle=False)
+
 
     steps_per_epoch = num_examples // sampling_batch
     test_accuracy_list = []
@@ -164,18 +177,18 @@ if __name__ == "__main__":
                     'user': train_data[subsampling, 0],
                     'movie': train_data[subsampling, 4]
                 },
-                y=train_data[subsampling, 2],
+                y=(train_data[subsampling, 2] >= 4).astype(np.float32),
                 batch_size=len(subsampling),
                 num_epochs=1,
-                shuffle=True)
+                shuffle=False)
             # Train the model for one step.
             ml_classifier.train(input_fn=train_input_fn, steps=1)
 
         # Evaluate the model and print results
-        eval_results = ml_classifier.evaluate(input_fn=eval_input_fn)
-        test_accuracy = eval_results['rmse']
-        test_accuracy_list.append(test_accuracy)
-        print('Test RMSE after %d epochs is: %.3f' % (epoch, test_accuracy))
+        # eval_results = ml_classifier.evaluate(input_fn=eval_input_fn)
+        # test_accuracy = eval_results['rmse']
+        # test_accuracy_list.append(test_accuracy)
+        # print('Test RMSE after %d epochs is: %.3f' % (epoch, test_accuracy))
 
         # Compute the privacy budget expended so far.
         if FLAGS.dpsgd:
@@ -190,3 +203,7 @@ if __name__ == "__main__":
                 break
         else:
             print('Trained with vanilla non-private SGD optimizer')
+
+    preds = ml_classifier.predict(input_fn=eval_input_fn)
+
+    ## creare lo zip da preds['score'] e confrontare come in matrix_factorization
