@@ -19,13 +19,13 @@ tf.compat.v1.logging.set_verbosity(3)
 #### FLAGS
 FLAGS = gflags.FLAGS
 gflags.DEFINE_boolean(
-    'dpsgd', False, 'If True, train with DP-SGD. If False, '
+    'dpsgd', True, 'If True, train with DP-SGD. If False, '
                    'train with vanilla SGD.')
 gflags.DEFINE_float('learning_rate', .001, 'Learning rate for training')
-gflags.DEFINE_float('noise_multiplier', 0.8,
+gflags.DEFINE_float('noise_multiplier', 0.55,
                     'Ratio of the standard deviation to the clipping norm')
 gflags.DEFINE_float('l2_norm_clip', 5, 'Clipping norm')
-gflags.DEFINE_integer('epochs', 1, 'Number of epochs')
+gflags.DEFINE_integer('epochs', 25, 'Number of epochs')
 gflags.DEFINE_integer('max_mu', 3, 'GDP upper limit')
 gflags.DEFINE_string('model_dir', None, 'Model directory')
 
@@ -204,6 +204,22 @@ if __name__ == "__main__":
         else:
             print('Trained with vanilla non-private SGD optimizer')
 
-    preds = ml_classifier.predict(input_fn=eval_input_fn)
+    score = ml_classifier.predict(input_fn=eval_input_fn, yield_single_examples=False)
 
-    ## creare lo zip da preds['score'] e confrontare come in matrix_factorization
+    for results in score:
+        prediction = pd.DataFrame([test_data[:, 0], test_data[:, 4], results['score']]).T
+        prediction = prediction.sort_values([0, 2], ascending=[True, False])
+
+    test_set = pd.DataFrame([test_data[:, 0], test_data[:, 4], test_data[:, 2]]).T
+    test_set = test_set.sort_values([0, 2], ascending=[True, False])
+
+    precisions = []
+    recalls = []
+
+    for u in prediction[0].unique():
+        top_k = prediction[prediction[0] == u][1][:10]
+        n_rel_and_rec_k = sum(i in test_set[test_set[0] == u][1][:10].to_numpy() for i in top_k)
+        precisions.append(n_rel_and_rec_k / 10)
+    precision = sum(precisions) / len(precisions)
+
+    print(f"Precision@10: {precision}")
