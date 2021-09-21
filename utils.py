@@ -21,6 +21,17 @@ def splitting(dataset, ratio=0.2):
     return train, test
 
 
+def splitting_leave_one_out(dataset):
+    print("Performing splitting...")
+    dataset['rank_first'] = dataset.groupby(['userId'])['timestamp'].rank(method='first', ascending=False, axis=1)
+    dataset["test_flag"] = dataset.apply(
+        lambda x: x["rank_first"] <= 1, axis=1)
+    test = dataset[dataset["test_flag"] == True].drop(columns=["rank_first", "test_flag"]).reset_index(drop=True)
+    train = dataset[dataset["test_flag"] == False].drop(columns=["rank_first", "test_flag"]).reset_index(drop=True)
+
+    return train, test
+
+
 def dataframe_to_dict(data):
     users = list(data['userId'].unique())
 

@@ -1,18 +1,20 @@
+import itertools
 import sys
 
+import gflags
 import numpy as np
 import pandas as pd
 import tensorflow as tf
-import gflags
 from scipy.stats import rankdata
-from sklearn.model_selection import train_test_split
 from tensorflow_privacy.privacy.analysis.gdp_accountant import compute_eps_poisson
 from tensorflow_privacy.privacy.analysis.gdp_accountant import compute_mu_poisson
 from tensorflow_privacy.privacy.optimizers import dp_optimizer
 
+from utils import splitting_leave_one_out
+
 sampling_batch = 10000
 microbatches = 10000
-num_examples = 80668
+num_examples = 80419
 
 tf.compat.v1.logging.set_verbosity(3)
 
@@ -21,25 +23,25 @@ FLAGS = gflags.FLAGS
 gflags.DEFINE_boolean(
     'dpsgd', True, 'If True, train with DP-SGD. If False, '
                    'train with vanilla SGD.')
-gflags.DEFINE_float('learning_rate', .001, 'Learning rate for training')
+gflags.DEFINE_float('learning_rate', .005, 'Learning rate for training')
 gflags.DEFINE_float('noise_multiplier', 0.55,
                     'Ratio of the standard deviation to the clipping norm')
 gflags.DEFINE_float('l2_norm_clip', 5, 'Clipping norm')
-gflags.DEFINE_integer('epochs', 25, 'Number of epochs')
+gflags.DEFINE_integer('epochs', 10, 'Number of epochs')
 gflags.DEFINE_integer('max_mu', 3, 'GDP upper limit')
 gflags.DEFINE_string('model_dir', None, 'Model directory')
 
 
 def nn_model_fn(features, labels, mode):
 
-    n_latent_factors_user = 10
-    n_latent_factors_movie = 10
-    n_latent_factors_mf = 5
+    n_latent_factors_user = 64
+    n_latent_factors_movie = 64
+    n_latent_factors_mf = 64
 
     user_input = tf.reshape(features['user'], [-1, 1])
     item_input = tf.reshape(features['movie'], [-1, 1])
 
-    # number of users: 6040; number of movies: 3706
+    # number of users: 610; number of movies: 9724
     mf_embedding_user = tf.keras.layers.Embedding(
         610, n_latent_factors_mf, input_length=1)
     mf_embedding_item = tf.keras.layers.Embedding(
@@ -63,22 +65,23 @@ def nn_model_fn(features, labels, mode):
     # Concatenation of two latent features
     mlp_vector = tf.keras.layers.concatenate([mlp_user_latent, mlp_item_latent])
 
-    predict_vector = tf.keras.layers.concatenate([mf_vector, mlp_vector])
+    mlp_1 = tf.keras.layers.Dense(256,  activation='relu')(mlp_vector)
+    mlp_2 = tf.keras.layers.Dense(128, activation='relu')(mlp_1)
+    mlp_3 = tf.keras.layers.Dense(64, activation='relu')(mlp_2)
+
+    predict_vector = tf.keras.layers.concatenate([mf_vector, mlp_3])
 
     logits = tf.keras.layers.Dense(1)(predict_vector)
 
     if mode == tf.estimator.ModeKeys.PREDICT:
         predictions = {
-            'score': tf.tensordot(
-                        a=tf.nn.sigmoid(logits),
-                        b=tf.constant(np.array([1]), dtype=tf.float32),
-                        axes=1)
+            'score': tf.nn.sigmoid(logits)
         }
         return tf.estimator.EstimatorSpec(mode=mode, predictions=predictions)
 
     # Calculate loss as a vector (to support microbatches in DP-SGD).
-    vector_loss = tf.nn.sigmoid_cross_entropy_with_logits(
-        labels=tf.expand_dims(labels, -1), logits=logits)
+    vector_loss = tf.keras.losses.BinaryCrossentropy(reduction=tf.losses.Reduction.NONE, from_logits=True)(
+        tf.expand_dims(labels, -1), logits)
     # Define mean of loss across minibatch (for reporting through tf.Estimator).
     scalar_loss = tf.reduce_mean(vector_loss)
 
@@ -144,22 +147,31 @@ if __name__ == "__main__":
     print('percentage of sparsity:',
           (1 - data.shape[0] / n_users / n_movies) * 100, '%')
 
-    train, test = train_test_split(data, test_size=0.2, random_state=100)
+    train, test = splitting_leave_one_out(data)
 
     train_data, test_data, _ = train.values - 1, test.values - 1, np.mean(train['rating'])
 
     # Instantiate the tf.Estimator.
     ml_classifier = tf.estimator.Estimator(model_fn=nn_model_fn, model_dir=FLAGS.model_dir)
 
+    full_eval = pd.DataFrame(list(itertools.product(set(train_data[:, 0]), set(train_data[:, 4]))))
+
+    train_item_filter = full_eval.groupby([0])\
+        .apply(lambda x: x[1].isin(train_data[train_data[:, 0] == x[0].unique()][:, 1])).reset_index(drop=True)
+
+    full_eval = full_eval[~train_item_filter]
+    full_eval["rank_first"] = full_eval.groupby(0).rank(method='first', ascending=False, axis=1)
+    full_eval["test_flag"] = full_eval.apply(
+        lambda x: x["rank_first"] <= 100, axis=1)
+    full_eval = full_eval[full_eval["test_flag"] == True].drop(columns=["rank_first", "test_flag"]).reset_index(drop=True)
     # Create tf.Estimator input functions for the training and test data.
     eval_input_fn = tf.compat.v1.estimator.inputs.numpy_input_fn(
         x={
-            'user': test_data[:, 0],
-            'movie': test_data[:, 4]
+            'user': full_eval[0].values,
+            'movie': full_eval[1].values
         },
-        y=(test_data[:, 2] >= 4).astype(np.float32),
         num_epochs=1,
-        batch_size=len(test_data),
+        batch_size=len(full_eval),
         shuffle=False)
 
 
@@ -207,18 +219,15 @@ if __name__ == "__main__":
     score = ml_classifier.predict(input_fn=eval_input_fn, yield_single_examples=False)
 
     for results in score:
-        prediction = pd.DataFrame([test_data[:, 0], test_data[:, 4], results['score']]).T
-        prediction = prediction.sort_values([0, 2], ascending=[True, False])
-
-    test_set = pd.DataFrame([test_data[:, 0], test_data[:, 4], test_data[:, 2]]).T
-    test_set = test_set.sort_values([0, 2], ascending=[True, False])
+        full_eval[2] = results['score']
+        prediction = full_eval.sort_values([0, 2], ascending=[True, False])
 
     precisions = []
     recalls = []
 
     for u in prediction[0].unique():
         top_k = prediction[prediction[0] == u][1][:10]
-        n_rel_and_rec_k = sum(i in test_set[test_set[0] == u][1][:10].to_numpy() for i in top_k)
+        n_rel_and_rec_k = sum(i in test_data[test_data[:, 0] == u][:, 1] for i in top_k)
         precisions.append(n_rel_and_rec_k / 10)
     precision = sum(precisions) / len(precisions)
 
