@@ -148,7 +148,7 @@ class MF:
                 2 * s_p * epochs * np.sqrt(2 * np.log(2 / delta)) / eps
                 # TODO: Terminare
 
-    def evaluate(self, test=None, cutoff=10, relevance=0.5):
+    def evaluate(self, test=None, cutoff=10, relevance=3.5):
         print("Starting evaluation...")
         prediction = (np.dot(self.p, self.q.T).T + self.i_avg[:, None]).T + self.u_avg[:, None]
         precisions = []
@@ -165,7 +165,10 @@ class MF:
             # top_k_score = prediction[u][top_k]
             n_rel_and_rec_k = sum(i in relevant_items_test[u] for i in top_k)
             precisions.append(n_rel_and_rec_k / cutoff)
-            recalls.append(n_rel_and_rec_k / len(relevant_items_test[u]))
+            try:
+                recalls.append(n_rel_and_rec_k / len(relevant_items_test[u]))
+            except ZeroDivisionError:
+                recalls.append(0)
         precision = sum(precisions) / len(precisions)
         recall = sum(recalls) / len(recalls)
 
@@ -190,11 +193,12 @@ with open("data/movielens/dataset.csv", "w") as f:
     f.writelines(ml_ratings)
 
 
-ratings = pd.read_csv('data/movielens/dataset.csv')
+df = pd.read_csv('data/movielens/dataset.csv')
 
 # prepara dataframe per mf
-df = ratings.loc[:, ['userId', 'movieId', 'rating', 'timestamp']]
 train_set, test_set = splitting(df)
+train_set = train_set.loc[:, ['userId', 'movieId', 'rating']]
+test_set = test_set.loc[:, ['userId', 'movieId', 'rating']]
 maps = create_maps(train_set)
 
 b_m = 1
@@ -207,11 +211,11 @@ clamping = 1
 preproc_train_set, i_avg, u_avg = privatize_global_effects(train_set, b_m, b_u, eps_global_avg, eps_item_avg,
                                                            eps_user_avg, clamping)
 
-f = 100
-lr = 0.001
-epochs = 30
+f = 50
+lr = 0.01
+epochs = 50
 
-mf = MF(train_set, maps, f, relevance=3, i_avg=i_avg, u_avg=u_avg)
+mf = MF(preproc_train_set, maps, f, relevance=0, i_avg=i_avg, u_avg=u_avg)
 # If we don't want to send privatized input:
 # mf = MF(train_set, f)
 mf.train(lr, epochs)
