@@ -194,6 +194,15 @@ store3 = store3_vm.get_root_client()
 parties = [store1, store2, store3]
 
 session = Session(parties=parties)
+
+# When we do not pass any protocol to session, SyMPC uses SPDZ protocol with semi-honest security type.
+# SPDZ is used for multiplication and related operations (convolution,matmul,etc) and could extend to N parties.
+
+# Falcon can also provide a malicious security guarantee for an honest majority at the cost of higher inference time.
+# Malicious security ensures that all the parties compute according to the protocol
+# and do not deviate from protocol or tamper with shares.
+#
+
 SessionManager.setup_mpc(session)
 
 
