@@ -7,26 +7,9 @@ import numpy as np
 from tqdm import tqdm
 import math
 
+from utils import create_maps, splitting
 
-def create_maps(dataset):
-    ext2int_user_map = {v: k for k, v in enumerate(dataset.iloc[:, 0].unique())}
-    int2ext_user_map = {k: v for k, v in enumerate(dataset.iloc[:, 0].unique())}
-    ext2int_item_map = {v: k for k, v in enumerate(dataset.iloc[:, 1].unique())}
-    int2ext_item_map = {k: v for k, v in enumerate(dataset.iloc[:, 1].unique())}
-    return ext2int_user_map, int2ext_user_map, ext2int_item_map, int2ext_item_map
-
-
-def splitting(dataset, ratio=0.2):
-    print("Performing splitting...")
-    user_size = dataset.groupby(['userId'], as_index=True).size()
-    user_threshold = user_size.apply(lambda x: math.floor(x * (1 - ratio)))
-    dataset['rank_first'] = dataset.groupby(['userId'])['timestamp'].rank(method='first', ascending=True)
-    dataset["test_flag"] = dataset.apply(
-        lambda x: x["rank_first"] > user_threshold.loc[x["userId"]], axis=1)
-    test = dataset[dataset["test_flag"] == True].drop(columns=["rank_first", "test_flag"]).reset_index(drop=True)
-    train = dataset[dataset["test_flag"] == False].drop(columns=["rank_first", "test_flag"]).reset_index(drop=True)
-
-    return train, test
+np.random.seed(42)
 
 
 def privatize_global_effects(ratings, b_m, b_u, eps_global_avg, eps_item_avg, eps_user_avg, clamping):
@@ -96,8 +79,15 @@ class MF:
         n_items = len(self.ext2int_item_map)
         self.n_interactions = len(dataset)
         self.delta_ratings = dataset.iloc[:, 2].max() - dataset.iloc[:, 2].min()
-        self.p = np.random.randn(n_users, n_factors)
-        self.q = np.random.randn(n_items, n_factors)
+        self.p = np.random.normal(size=(n_users, n_factors), scale=1./n_factors, loc=0)
+        self.q = np.random.normal(size=(n_items, n_factors), scale=1./n_factors, loc=0)
+
+        self.b_u = np.zeros(n_users)
+        self.b_i = np.zeros(n_items)
+        self.b = np.mean(dataset['rating'])
+
+        self.i_avg = None
+        self.u_avg = None
         if i_avg is not None and u_avg is not None:
             self.i_avg = i_avg.to_numpy()
             self.u_avg = u_avg.to_numpy()
@@ -109,28 +99,38 @@ class MF:
         dataset['rating'] = df.iloc[:, 2].to_dict()
         return dataset
 
-    def train(self, lr, epochs):
+    def train(self, lr, beta, epochs):
         print("Starting training...")
         for e in range(epochs):
             print(f"*** Epoch {e + 1}/{epochs} ***")
             for i in tqdm(range(self.n_interactions)):
                 p_u = self.p[self.dataset['userId'][i]]
                 q_i = self.q[self.dataset['itemId'][i]]
-                pred = p_u.dot(q_i)
+                pred = self.b + self.b_u[self.dataset['userId'][i]] + self.b_i[self.dataset['itemId'][i]] + p_u.dot(q_i)
                 err = self.dataset['rating'][i] - pred
-                self.p[self.dataset['userId'][i]] = p_u + lr * (err * q_i)
-                self.q[self.dataset['itemId'][i]] = q_i + lr * (err * p_u)
 
-    def train_laplace_dp(self, lr, epochs, eps, err_max=None):
+                # Update biases
+                self.b_u[self.dataset['userId'][i]] += lr * (err - beta * self.b_u[self.dataset['userId'][i]])
+                self.b_i[self.dataset['itemId'][i]] += lr * (err - beta * self.b_i[self.dataset['itemId'][i]])
+
+                self.p[self.dataset['userId'][i]] = p_u + lr * (err * q_i - beta * p_u)
+                self.q[self.dataset['itemId'][i]] = q_i + lr * (err * p_u - beta * q_i)
+
+    def train_laplace_dp(self, lr, beta, epochs, eps, err_max=None):
         for e in range(epochs):
             print(f"*** Epoch {e + 1}/{epochs} ***")
             for i in tqdm(range(self.n_interactions)):
                 p_u = self.p[self.dataset['userId'][i]]
                 q_i = self.q[self.dataset['itemId'][i]]
-                pred = p_u.dot(q_i)
+                pred = self.b + self.b_u[self.dataset['userId'][i]] + self.b_i[self.dataset['itemId'][i]] + p_u.dot(q_i)
                 err = self.dataset['rating'][i] - pred + np.random.laplace(scale=(epochs * self.delta_ratings / eps))
                 if err_max:
                     err = np.clip(err, -err_max, err_max)
+
+                # Update biases
+                self.b_u[self.dataset['userId'][i]] += lr * (err - beta * self.b_u[self.dataset['userId'][i]])
+                self.b_i[self.dataset['itemId'][i]] += lr * (err - beta * self.b_i[self.dataset['itemId'][i]])
+
                 self.p[self.dataset['userId'][i]] = p_u + lr * (err * q_i)
                 self.q[self.dataset['itemId'][i]] = q_i + lr * (err * p_u)
 
@@ -148,9 +148,13 @@ class MF:
                 2 * s_p * epochs * np.sqrt(2 * np.log(2 / delta)) / eps
                 # TODO: Terminare
 
-    def evaluate(self, test=None, cutoff=10, relevance=3.5):
+    def evaluate(self, test=None, cutoff=10, relevance=0.5):
         print("Starting evaluation...")
-        prediction = (np.dot(self.p, self.q.T).T + self.i_avg[:, None]).T + self.u_avg[:, None]
+        if self.i_avg is not None and self.u_avg is not None:
+            prediction = self.b + self.b_u[:, np.newaxis] + self.b_i[np.newaxis, :] + \
+                         (np.dot(self.p, self.q.T).T + self.i_avg[:, None]).T + self.u_avg[:, None]
+        else:
+            prediction = self.b + self.b_u[:, np.newaxis] + self.b_i[np.newaxis, :] + np.dot(self.p, self.q.T)
         precisions = []
         recalls = []
         print("Reading test set...")
@@ -211,13 +215,15 @@ clamping = 1
 preproc_train_set, i_avg, u_avg = privatize_global_effects(train_set, b_m, b_u, eps_global_avg, eps_item_avg,
                                                            eps_user_avg, clamping)
 
-f = 50
-lr = 0.01
-epochs = 50
+f = 100
+lr = 0.001
+beta = 0.1
+epochs = 20
 
-mf = MF(preproc_train_set, maps, f, relevance=0, i_avg=i_avg, u_avg=u_avg)
+# mf = MF(train_set, maps, f, relevance=4, i_avg=i_avg, u_avg=u_avg)
+mf = MF(train_set, maps, f, relevance=4, i_avg=None, u_avg=None)
 # If we don't want to send privatized input:
 # mf = MF(train_set, f)
-mf.train(lr, epochs)
+mf.train(lr, beta, epochs)
+# mf.train_laplace_dp(lr, beta, epochs, 10)
 mf.evaluate(test_set)
-#mf.train_dp(lr, epochs, 10)

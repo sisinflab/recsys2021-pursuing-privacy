@@ -20,50 +20,8 @@ from sympc.session import SessionManager
 from sympc.tensor import MPCTensor
 
 # The MPCTensor is the tensor that holds reference to the shares owned by the different parties.
-
-from torch.utils.data import Dataset
-
-
-class PandasDataset(Dataset):
-    def __init__(self, dataframe):
-        self.dataframe = dataframe
-
-    def __len__(self):
-        return len(self.dataframe)
-
-    def __getitem__(self, index):
-        return self.dataframe.iloc[index]
-
-
-
-class NeuralCollaborativeFiltering(torch.nn.Module):
-    """
-    A pytorch implementation of Neural Collaborative Filtering.
-    Reference:
-        X He, et al. Neural Collaborative Filtering, 2017.
-    """
-
-    def __init__(self, field_dims, user_field_idx, item_field_idx, embed_dim, mlp_dims, dropout):
-        super().__init__()
-        self.user_field_idx = user_field_idx
-        self.item_field_idx = item_field_idx
-        self.embedding = FeaturesEmbedding(field_dims, embed_dim)
-        self.embed_output_dim = len(field_dims) * embed_dim
-        self.mlp = MultiLayerPerceptron(self.embed_output_dim, mlp_dims, dropout, output_layer=False)
-        self.fc = torch.nn.Linear(mlp_dims[-1] + embed_dim, 1)
-
-    def forward(self, x):
-        """
-        :param x: Long tensor of size ``(batch_size, num_user_fields)``
-        """
-        x = self.embedding(x)
-        user_x = x[:, self.user_field_idx].squeeze(1)
-        item_x = x[:, self.item_field_idx].squeeze(1)
-        x = self.mlp(x.view(-1, self.embed_output_dim))
-        gmf = user_x * item_x
-        x = torch.cat([gmf, x], dim=1)
-        x = self.fc(x).squeeze(1)
-        return torch.sigmoid(x)
+from neural_collaborative_filtering import NeuralCollaborativeFiltering
+from utils import MovieLensDataset, split_data
 
 
 def train(model, optimizer, data_loader, criterion, device, log_interval=100):
@@ -93,43 +51,6 @@ def test(model, data_loader, device):
             targets.extend(target.tolist())
             predicts.extend(y.tolist())
     return roc_auc_score(targets, predicts)
-
-
-class MovieLensDataset(torch.utils.data.Dataset):
-    """
-    MovieLens 20M Dataset
-    Data preparation
-        treat samples with a rating less than 3 as negative samples
-    :param dataset_path: MovieLens dataset path
-    Reference:
-        https://grouplens.org/datasets/movielens
-    """
-
-    def __init__(self, dataset, sep=',', engine='c', header='infer'):
-        # data = pd.read_csv(dataset_path, sep=sep, engine=engine, header=header).to_numpy()[:, :3]
-        data = dataset.to_numpy()[:, :3]
-        self.items = data[:, :2].astype(np.int)  # -1 because ID begins from 1
-        self.targets = self.__preprocess_target(data[:, 2]).astype(np.float32)
-        self.field_dims = np.max(self.items, axis=0) + 1
-        self.user_field_idx = np.array((0, ), dtype=np.long)
-        self.item_field_idx = np.array((1,), dtype=np.long)
-
-    def __len__(self):
-        return self.targets.shape[0]
-
-    def __getitem__(self, index):
-        return self.items[index], self.targets[index]
-
-    def __preprocess_target(self, target):
-        target[target <= 3] = 0
-        target[target > 3] = 1
-        return target
-
-
-def split_data(data, n_organizations):
-    item_idxs = np.array_split(np.random.permutation(data.iloc[:, 1].unique()), n_organizations)
-    dfs = [data[data.iloc[:, 1].isin(item_idxs[i])] for i in range(n_organizations)]
-    return dfs
 
 
 # # Let's download MovieLens Small

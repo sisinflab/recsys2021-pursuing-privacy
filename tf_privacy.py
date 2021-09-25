@@ -5,12 +5,11 @@ import gflags
 import numpy as np
 import pandas as pd
 import tensorflow as tf
-from scipy.stats import rankdata
 from tensorflow_privacy.privacy.analysis.gdp_accountant import compute_eps_poisson
 from tensorflow_privacy.privacy.analysis.gdp_accountant import compute_mu_poisson
 from tensorflow_privacy.privacy.optimizers import dp_optimizer
 
-from utils import splitting_leave_one_out
+from utils import splitting
 
 sampling_batch = 10000
 microbatches = 10000
@@ -18,16 +17,19 @@ num_examples = 80419
 
 tf.compat.v1.logging.set_verbosity(3)
 
+np.random.seed(42)
+tf.random.set_seed(42)
+
 #### FLAGS
 FLAGS = gflags.FLAGS
 gflags.DEFINE_boolean(
-    'dpsgd', True, 'If True, train with DP-SGD. If False, '
+    'dpsgd', False, 'If True, train with DP-SGD. If False, '
                    'train with vanilla SGD.')
-gflags.DEFINE_float('learning_rate', .005, 'Learning rate for training')
+gflags.DEFINE_float('learning_rate', .05, 'Learning rate for training')
 gflags.DEFINE_float('noise_multiplier', 0.55,
                     'Ratio of the standard deviation to the clipping norm')
 gflags.DEFINE_float('l2_norm_clip', 5, 'Clipping norm')
-gflags.DEFINE_integer('epochs', 10, 'Number of epochs')
+gflags.DEFINE_integer('epochs', 15, 'Number of epochs')
 gflags.DEFINE_integer('max_mu', 3, 'GDP upper limit')
 gflags.DEFINE_string('model_dir', None, 'Model directory')
 
@@ -43,13 +45,18 @@ def nn_model_fn(features, labels, mode):
 
     # number of users: 610; number of movies: 9724
     mf_embedding_user = tf.keras.layers.Embedding(
-        610, n_latent_factors_mf, input_length=1)
+        610, n_latent_factors_mf, input_length=1, embeddings_initializer=tf.initializers.GlorotUniform())
     mf_embedding_item = tf.keras.layers.Embedding(
-        9724, n_latent_factors_mf, input_length=1)
+        8983, n_latent_factors_mf, input_length=1, embeddings_initializer=tf.initializers.GlorotUniform())
     mlp_embedding_user = tf.keras.layers.Embedding(
-        610, n_latent_factors_user, input_length=1)
+        610, n_latent_factors_user, input_length=1, embeddings_initializer=tf.initializers.GlorotUniform())
     mlp_embedding_item = tf.keras.layers.Embedding(
-        9724, n_latent_factors_movie, input_length=1)
+        8983, n_latent_factors_movie, input_length=1, embeddings_initializer=tf.initializers.GlorotUniform())
+
+    mf_embedding_user(0)
+    mf_embedding_item(0)
+    mlp_embedding_user(0)
+    mlp_embedding_item(0)
 
     # GMF part
     # Flatten the embedding vector as latent features in GMF
@@ -65,11 +72,7 @@ def nn_model_fn(features, labels, mode):
     # Concatenation of two latent features
     mlp_vector = tf.keras.layers.concatenate([mlp_user_latent, mlp_item_latent])
 
-    mlp_1 = tf.keras.layers.Dense(256,  activation='relu')(mlp_vector)
-    mlp_2 = tf.keras.layers.Dense(128, activation='relu')(mlp_1)
-    mlp_3 = tf.keras.layers.Dense(64, activation='relu')(mlp_2)
-
-    predict_vector = tf.keras.layers.concatenate([mf_vector, mlp_3])
+    predict_vector = tf.keras.layers.concatenate([mf_vector, mlp_vector])
 
     logits = tf.keras.layers.Dense(1)(predict_vector)
 
@@ -140,30 +143,37 @@ if __name__ == "__main__":
     print('number of user: ', n_users)
 
     # give unique dense movie index to movieId
-    data['movieIndex'] = rankdata(data['movieId'], method='dense')
+    # data['movieIndex'] = rankdata(data['movieId'], method='dense')
     # minus one to reduce the minimum value to 0, which is the start of col index
 
     print('number of ratings:', data.shape[0])
     print('percentage of sparsity:',
           (1 - data.shape[0] / n_users / n_movies) * 100, '%')
 
-    train, test = splitting_leave_one_out(data)
+    train, test = splitting(data, ratio=0.2)
 
-    train_data, test_data, _ = train.values - 1, test.values - 1, np.mean(train['rating'])
+    test = test[test['movieId'].isin(train['movieId'].unique())]
 
-    # Instantiate the tf.Estimator.
-    ml_classifier = tf.estimator.Estimator(model_fn=nn_model_fn, model_dir=FLAGS.model_dir)
+    user_map = {v: k for k, v in enumerate(train['userId'].unique())}
+    movie_map = {v: k for k, v in enumerate(train['movieId'].unique())}
 
-    full_eval = pd.DataFrame(list(itertools.product(set(train_data[:, 0]), set(train_data[:, 4]))))
+    train['userId'] = train['userId'].map(user_map)
+    train['movieId'] = train['movieId'].map(movie_map)
 
-    train_item_filter = full_eval.groupby([0])\
+    test['userId'] = test['userId'].map(user_map)
+    test['movieId'] = test['movieId'].map(movie_map)
+
+    train_data, test_data, _ = train.values, test.values, np.mean(train['rating'])
+
+    full_eval = pd.DataFrame(list(itertools.product(set(test_data[:, 0]), set(train_data[:, 1]))))
+
+    train_item_filter = full_eval.groupby([0]) \
         .apply(lambda x: x[1].isin(train_data[train_data[:, 0] == x[0].unique()][:, 1])).reset_index(drop=True)
 
     full_eval = full_eval[~train_item_filter]
-    full_eval["rank_first"] = full_eval.groupby(0).rank(method='first', ascending=False, axis=1)
-    full_eval["test_flag"] = full_eval.apply(
-        lambda x: x["rank_first"] <= 100, axis=1)
-    full_eval = full_eval[full_eval["test_flag"] == True].drop(columns=["rank_first", "test_flag"]).reset_index(drop=True)
+    # Instantiate the tf.Estimator.
+    ml_classifier = tf.estimator.Estimator(model_fn=nn_model_fn, model_dir=FLAGS.model_dir)
+
     # Create tf.Estimator input functions for the training and test data.
     eval_input_fn = tf.compat.v1.estimator.inputs.numpy_input_fn(
         x={
@@ -187,7 +197,7 @@ if __name__ == "__main__":
             train_input_fn = tf.compat.v1.estimator.inputs.numpy_input_fn(
                 x={
                     'user': train_data[subsampling, 0],
-                    'movie': train_data[subsampling, 4]
+                    'movie': train_data[subsampling, 1]
                 },
                 y=(train_data[subsampling, 2] >= 4).astype(np.float32),
                 batch_size=len(subsampling),
@@ -222,13 +232,24 @@ if __name__ == "__main__":
         full_eval[2] = results['score']
         prediction = full_eval.sort_values([0, 2], ascending=[True, False])
 
+    hrs = []
     precisions = []
     recalls = []
 
     for u in prediction[0].unique():
         top_k = prediction[prediction[0] == u][1][:10]
-        n_rel_and_rec_k = sum(i in test_data[test_data[:, 0] == u][:, 1] for i in top_k)
+        relevant_user_items = test_data[np.logical_and(test_data[:, 0] == u, test_data[:, 2] >= 4)][:, 1]
+        n_rel_and_rec_k = sum(i in relevant_user_items for i in top_k)
+        hrs.append(n_rel_and_rec_k)
         precisions.append(n_rel_and_rec_k / 10)
+        try:
+            recalls.append(n_rel_and_rec_k / len(relevant_user_items))
+        except ZeroDivisionError:
+            recalls.append(0)
+    hr = sum(hrs) / len(hrs)
     precision = sum(precisions) / len(precisions)
+    recall = sum(recalls) / len(recalls)
 
+    print(f"HR@10: {hr}")
     print(f"Precision@10: {precision}")
+    print(f"Recall@10: {recall}")
