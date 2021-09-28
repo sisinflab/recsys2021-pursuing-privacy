@@ -1,5 +1,6 @@
 import math
 import numpy as np
+import torch
 
 np.random.seed(42)
 
@@ -21,6 +22,7 @@ def splitting(dataset, ratio=0.2):
         lambda x: x["rank_first"] > user_threshold.loc[x["userId"]], axis=1)
     test = dataset[dataset["test_flag"] == True].drop(columns=["rank_first", "test_flag"]).reset_index(drop=True)
     train = dataset[dataset["test_flag"] == False].drop(columns=["rank_first", "test_flag"]).reset_index(drop=True)
+    print("Done!")
 
     return train, test
 

@@ -20,8 +20,9 @@ def privatize_global_effects(ratings, b_m, b_u, eps_global_avg, eps_item_avg, ep
     global_average_item = (ratings['rating'].sum() + np.random.laplace(scale=(delta_r / eps_global_avg))) / len(ratings)
 
     item_sets = ratings.groupby('movieId')['rating']
-    i_avg = (item_sets.sum() + b_m * global_average_item + np.random.laplace(scale=(delta_r / eps_item_avg))) / (
-                item_sets.count() + b_m)
+    i_avg = (item_sets.sum() + b_m * global_average_item + np.random.laplace(scale=(delta_r / eps_item_avg),
+                                                                             size=len(item_sets))) / (
+                        item_sets.count() + b_m)
     i_avg = np.clip(i_avg, min_rating, max_rating)
 
     merged = ratings.join(i_avg, on=['movieId'], lsuffix='_x', rsuffix='_y')
