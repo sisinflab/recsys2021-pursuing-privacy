@@ -240,3 +240,4 @@ pip-selfcheck.json
 /.idea/RecSysPrivacyTutorial.iml
 /.idea/vcs.xml
 /.idea/inspectionProfiles/
+/notebooks/data/
