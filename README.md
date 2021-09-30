@@ -2,7 +2,7 @@
 __The View of Users and Researchers from Regulations to Applications__
 
 * To start the ***Hands-on Session*** access the Jupyter Notebook: [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/sisinflab/recsys2021-pursuing-privacy/HEAD?filepath=notebooks/1_dp_matrix_factorization.ipynb)
-* [Presentation Slides](https://github.com/sisinflab/recsys2021-pursuing-privacy/tutorial_slides.pdf)
+* [Presentation Slides](https://github.com/sisinflab/recsys2021-pursuing-privacy/blob/master/tutorial_slides.pdf)
 
 
 For information, please contact us at
