@@ -1,6 +1,5 @@
 import math
 import numpy as np
-import torch
 
 np.random.seed(42)
 

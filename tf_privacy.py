@@ -213,6 +213,7 @@ if __name__ == "__main__":
         # print('Test RMSE after %d epochs is: %.3f' % (epoch, test_accuracy))
 
         # Compute the privacy budget expended so far.
+        # In deep learning we can use subsampling strategy to reduce the privacy budget at each iteration.
         if FLAGS.dpsgd:
             eps = compute_eps_poisson(epoch, FLAGS.noise_multiplier, num_examples,
                                       sampling_batch, 1e-6)
